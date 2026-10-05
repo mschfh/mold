@@ -4,6 +4,7 @@
 #include <filesystem>
 #include <sys/file.h>
 #include <sys/mman.h>
+#include <sys/stat.h>
 #include <system_error>
 
 #ifdef __linux__
@@ -17,6 +18,17 @@ static u32 get_umask() {
   u32 orig_umask = umask(0);
   umask(orig_umask);
   return orig_umask;
+}
+
+// Returns whether the two paths are on the same filesystem. If either
+// path cannot be inspected, assume the common case and let rename
+// report the error.
+static bool is_same_filesystem(std::string a, std::string b) {
+  struct stat sa = {};
+  struct stat sb = {};
+  if (::stat(a.c_str(), &sa) == -1 || ::stat(b.c_str(), &sb) == -1)
+    return true;
+  return sa.st_dev == sb.st_dev;
 }
 
 template <typename E>
@@ -45,8 +57,17 @@ public:
   MemoryMappedOutputFile(Context<E> &ctx, std::string path, i64 filesize, int perm)
     : OutputFile<E>(path, filesize, true) {
     std::string pid = std::to_string(getpid());
+    std::string dir = path_dirname(path);
+    if (!ctx.arg.temp_dir.empty()) {
+      // The intermediate file is written to the directory given by
+      // --temp-dir or the MOLD_TEMP_DIR environment variable instead of
+      // next to the output file.
+      dir = ctx.arg.temp_dir;
+      if (dir.starts_with('/') && !ctx.arg.chroot.empty())
+        dir = ctx.arg.chroot + "/" + path_clean(dir);
+    }
     std::string tmpfile =
-      path_dirname(path) / ("." + path_filename(path) + "." + pid);
+      std::filesystem::path(dir) / ("." + path_filename(path) + "." + pid);
 
     this->fd = open_or_create_file(ctx, path, tmpfile, perm);
 
@@ -93,6 +114,32 @@ public:
       fseek(out, 0, SEEK_END);
       fwrite(this->buf2, this->buf2_size, 1, out);
       fclose(out);
+    }
+
+    // A file cannot be renamed across filesystems. If the intermediate
+    // file is on a different filesystem than the output file, copy it to
+    // a temporary file next to the output file and rename that file into
+    // place instead, so that the output is still published atomically.
+    char *tmpfile = output_tmpfile;
+    if (!is_same_filesystem(tmpfile, path_dirname(this->path))) {
+      std::string staging =
+        path_dirname(this->path) /
+        ("." + path_filename(this->path) + "." + std::to_string(getpid()));
+
+      // The staging file is registered so that a fatal error or a signal
+      // during the copy removes the partially written file instead of the
+      // completed intermediate file.
+      output_tmpfile = (char *)save_string(ctx, staging).data();
+
+      std::error_code ec;
+      std::filesystem::copy_file(tmpfile, staging,
+                                 std::filesystem::copy_options::overwrite_existing,
+                                 ec);
+      if (ec)
+        Fatal(ctx) << "cannot copy " << tmpfile << " to " << staging << ": "
+                   << ec.message();
+
+      unlink(tmpfile);
     }
 
     // If an output file already exists, open a file and then remove it.

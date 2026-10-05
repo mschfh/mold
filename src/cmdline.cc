@@ -171,6 +171,7 @@ Options:
     --end-lib                 End the effect of --start-lib
   --stats                     Print input statistics
   --sysroot DIR               Set the target system root directory
+  --temp-dir=DIR              Write the intermediate output file to DIR
   --thread-count COUNT, --threads=COUNT
                               Use COUNT number of threads
   --threads                   Use multiple threads (default)
@@ -916,6 +917,8 @@ std::vector<std::string> parse_nonpositional_args(Context<E> &ctx) {
       ctx.arg.library_paths.emplace_back(arg);
     } else if (read_arg("sysroot")) {
       ctx.arg.sysroot = arg;
+    } else if (read_arg("temp-dir")) {
+      ctx.arg.temp_dir = arg;
     } else if (read_arg("unique")) {
       if (!ctx.arg.unique.add(arg, 1))
         Fatal(ctx) << "-unique: invalid glob pattern: " << arg;
@@ -1615,6 +1618,13 @@ std::vector<std::string> parse_nonpositional_args(Context<E> &ctx) {
 
   if (char *env = getenv("MOLD_REPRO"); env && env[0])
     ctx.arg.repro = true;
+
+  // --temp-dir may also be set with the MOLD_TEMP_DIR environment
+  // variable. Unlike TMPDIR, this is opt-in because the intermediate
+  // output file is as large as the final output file.
+  if (ctx.arg.temp_dir.empty())
+    if (char *env = getenv("MOLD_TEMP_DIR"); env && env[0])
+      ctx.arg.temp_dir = env;
 
   if (ctx.arg.default_symver) {
     std::string ver = ctx.arg.soname;

@@ -2559,6 +2559,7 @@ struct Context {
     std::string separate_debug_file;
     std::string soname;
     std::string sysroot;
+    std::string temp_dir;
     std::string_view emulation;
     std::unordered_map<std::string_view, u64> section_align;
     std::unordered_map<std::string_view, u64> section_start;
